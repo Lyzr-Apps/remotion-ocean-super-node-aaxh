@@ -38,7 +38,14 @@ import {
   FiArrowRight,
   FiLoader,
   FiAlertCircle,
-  FiMonitor,
+  FiPlay,
+  FiPause,
+  FiSkipBack,
+  FiSkipForward,
+  FiVolume2,
+  FiVolumeX,
+  FiMaximize2,
+  FiMinimize2,
 } from 'react-icons/fi'
 import {
   HiOutlineSparkles,
@@ -1032,6 +1039,402 @@ function ScriptPreviewScreen({
   )
 }
 
+// ==================== VIDEO PREVIEW PLAYER ====================
+function VideoPreviewPlayer({
+  scenes,
+  sceneVisuals,
+  images,
+  title,
+}: {
+  scenes: SceneData[]
+  sceneVisuals: SceneVisual[]
+  images: ArtifactFileData[]
+  title: string
+}) {
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentSceneIdx, setCurrentSceneIdx] = useState(0)
+  const [sceneElapsed, setSceneElapsed] = useState(0)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
+  const [showNarration, setShowNarration] = useState(true)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const TICK_MS = 100
+
+  const safeScenes = Array.isArray(scenes) ? scenes : []
+  const safeImages = Array.isArray(images) ? images : []
+  const safeVisuals = Array.isArray(sceneVisuals) ? sceneVisuals : []
+
+  const totalDuration = safeScenes.reduce((sum, s) => sum + (s?.duration_seconds ?? 0), 0)
+
+  const currentScene = safeScenes[currentSceneIdx]
+  const currentVisual = safeVisuals[currentSceneIdx]
+  const currentImage = safeImages[currentSceneIdx]
+  const sceneDuration = currentScene?.duration_seconds ?? 10
+
+  // Calculate overall elapsed time
+  const elapsedBefore = safeScenes.slice(0, currentSceneIdx).reduce((sum, s) => sum + (s?.duration_seconds ?? 0), 0)
+  const overallElapsed = elapsedBefore + sceneElapsed
+  const overallProgress = totalDuration > 0 ? (overallElapsed / totalDuration) * 100 : 0
+  const sceneProgress = sceneDuration > 0 ? (sceneElapsed / sceneDuration) * 100 : 0
+
+  // Playback tick
+  useEffect(() => {
+    if (isPlaying) {
+      intervalRef.current = setInterval(() => {
+        setSceneElapsed((prev) => {
+          const next = prev + TICK_MS / 1000
+          if (next >= sceneDuration) {
+            // Move to next scene
+            setCurrentSceneIdx((prevIdx) => {
+              if (prevIdx >= safeScenes.length - 1) {
+                // End of video
+                setIsPlaying(false)
+                return prevIdx
+              }
+              return prevIdx + 1
+            })
+            return 0
+          }
+          return next
+        })
+      }, TICK_MS)
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
+  }, [isPlaying, sceneDuration, safeScenes.length])
+
+  // Reset elapsed when scene changes externally
+  useEffect(() => {
+    setSceneElapsed(0)
+  }, [currentSceneIdx])
+
+  const togglePlay = () => {
+    if (!isPlaying && currentSceneIdx >= safeScenes.length - 1 && sceneElapsed >= sceneDuration) {
+      // Restart from beginning
+      setCurrentSceneIdx(0)
+      setSceneElapsed(0)
+    }
+    setIsPlaying((prev) => !prev)
+  }
+
+  const skipPrev = () => {
+    setIsPlaying(false)
+    setSceneElapsed(0)
+    setCurrentSceneIdx((prev) => Math.max(0, prev - 1))
+  }
+
+  const skipNext = () => {
+    setIsPlaying(false)
+    setSceneElapsed(0)
+    setCurrentSceneIdx((prev) => Math.min(safeScenes.length - 1, prev + 1))
+  }
+
+  const seekToPosition = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    const targetTime = pct * totalDuration
+
+    let accumulated = 0
+    for (let i = 0; i < safeScenes.length; i++) {
+      const dur = safeScenes[i]?.duration_seconds ?? 0
+      if (accumulated + dur > targetTime) {
+        setCurrentSceneIdx(i)
+        setSceneElapsed(targetTime - accumulated)
+        return
+      }
+      accumulated += dur
+    }
+    // Past end
+    setCurrentSceneIdx(safeScenes.length - 1)
+    setSceneElapsed(safeScenes[safeScenes.length - 1]?.duration_seconds ?? 0)
+  }
+
+  const isFinished = currentSceneIdx >= safeScenes.length - 1 && sceneElapsed >= sceneDuration
+
+  if (safeScenes.length === 0) return null
+
+  return (
+    <Card className={cn(
+      'bg-[hsl(20,40%,6%)] border-2 border-[hsl(20,30%,15%)] rounded-2xl mb-6 shadow-xl overflow-hidden transition-all duration-500',
+      isExpanded ? 'fixed inset-4 z-50 m-0 rounded-2xl' : ''
+    )}>
+      {isExpanded && (
+        <div className="fixed inset-0 bg-black/80 -z-10" onClick={() => setIsExpanded(false)} />
+      )}
+
+      {/* Video viewport */}
+      <div className={cn(
+        'relative bg-black flex items-center justify-center overflow-hidden',
+        isExpanded ? 'h-[calc(100%-140px)]' : 'aspect-video'
+      )}>
+        {/* Scene image or color fallback */}
+        {currentImage?.file_url ? (
+          <img
+            src={currentImage.file_url}
+            alt={currentScene?.scene_title ?? `Scene ${currentSceneIdx + 1}`}
+            className="w-full h-full object-contain transition-opacity duration-700"
+            key={`img-${currentSceneIdx}`}
+          />
+        ) : currentVisual?.color_palette ? (
+          <div
+            className="w-full h-full transition-all duration-700"
+            style={{
+              background: `linear-gradient(135deg, ${currentVisual.color_palette.primary ?? '#1a1a2e'}, ${currentVisual.color_palette.secondary ?? '#16213e'}, ${currentVisual.color_palette.accent ?? '#0f3460'})`,
+            }}
+            key={`grad-${currentSceneIdx}`}
+          />
+        ) : (
+          <div className="w-full h-full bg-gradient-to-br from-[hsl(20,40%,8%)] to-[hsl(20,40%,3%)] flex items-center justify-center" key={`empty-${currentSceneIdx}`}>
+            <FiFilm className="w-20 h-20 text-[hsl(30,20%,60%)]/20" />
+          </div>
+        )}
+
+        {/* Scene transition overlay */}
+        <div
+          className="absolute inset-0 bg-black pointer-events-none transition-opacity duration-500"
+          style={{ opacity: sceneElapsed < 0.5 ? Math.max(0, 1 - sceneElapsed * 2) : 0 }}
+        />
+
+        {/* Title overlay — shown at start */}
+        {currentSceneIdx === 0 && sceneElapsed < 3 && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none">
+            <div className="text-center px-8" style={{ opacity: sceneElapsed < 0.5 ? sceneElapsed * 2 : sceneElapsed > 2.5 ? Math.max(0, (3 - sceneElapsed) * 2) : 1 }}>
+              <h3 className="font-serif text-2xl md:text-3xl font-extrabold text-white tracking-tight drop-shadow-lg">
+                {title}
+              </h3>
+            </div>
+          </div>
+        )}
+
+        {/* Scene title badge */}
+        <div className="absolute top-4 left-4 flex items-center gap-2">
+          <Badge className="bg-black/60 text-white border-0 backdrop-blur-sm rounded-lg px-2.5 py-1 text-xs font-semibold">
+            Scene {currentScene?.scene_number ?? currentSceneIdx + 1} / {safeScenes.length}
+          </Badge>
+          <Badge className="bg-[hsl(24,80%,45%)]/80 text-white border-0 backdrop-blur-sm rounded-lg px-2.5 py-1 text-xs">
+            {currentScene?.scene_title ?? 'Untitled'}
+          </Badge>
+        </div>
+
+        {/* Narration text overlay */}
+        {showNarration && currentScene?.narration_text && (
+          <div className="absolute bottom-16 left-0 right-0 flex justify-center px-6 pointer-events-none">
+            <div
+              className="max-w-2xl bg-black/70 backdrop-blur-sm rounded-xl px-5 py-3 transition-opacity duration-500"
+              style={{ opacity: sceneElapsed < 0.8 ? Math.min(1, sceneElapsed * 2) : 1 }}
+            >
+              <p className="text-white text-sm md:text-base leading-relaxed text-center font-medium">
+                {currentScene.narration_text}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Text overlay from visual direction */}
+        {currentVisual?.text_overlay?.text && !showNarration && (
+          <div className="absolute bottom-16 left-0 right-0 flex justify-center px-6 pointer-events-none">
+            <div className="bg-black/50 backdrop-blur-sm rounded-xl px-4 py-2">
+              <p className="text-white text-lg font-bold text-center">
+                {currentVisual.text_overlay.text}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Scene progress within current scene */}
+        <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/10">
+          <div
+            className="h-full bg-[hsl(24,80%,45%)] transition-all duration-100"
+            style={{ width: `${sceneProgress}%` }}
+          />
+        </div>
+
+        {/* Play/pause overlay on click */}
+        <button
+          onClick={togglePlay}
+          className="absolute inset-0 flex items-center justify-center group cursor-pointer"
+        >
+          <div className={cn(
+            'w-16 h-16 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center transition-all duration-300',
+            isPlaying ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'
+          )}>
+            {isFinished ? (
+              <FiRefreshCw className="w-7 h-7 text-white" />
+            ) : isPlaying ? (
+              <FiPause className="w-7 h-7 text-white" />
+            ) : (
+              <FiPlay className="w-7 h-7 text-white ml-1" />
+            )}
+          </div>
+        </button>
+
+        {/* Expand/collapse button */}
+        <button
+          onClick={(e) => { e.stopPropagation(); setIsExpanded((prev) => !prev) }}
+          className="absolute top-4 right-4 w-8 h-8 rounded-lg bg-black/50 backdrop-blur-sm flex items-center justify-center text-white hover:bg-black/70 transition-all"
+        >
+          {isExpanded ? <FiMinimize2 className="w-4 h-4" /> : <FiMaximize2 className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* Controls bar */}
+      <div className="bg-[hsl(20,40%,6%)] border-t border-[hsl(20,30%,15%)] px-4 py-3">
+        {/* Seekbar */}
+        <div
+          className="h-2 rounded-full bg-[hsl(20,30%,15%)] cursor-pointer mb-3 relative group"
+          onClick={seekToPosition}
+        >
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-[hsl(24,85%,55%)] to-[hsl(35,80%,55%)] transition-all duration-100 relative"
+            style={{ width: `${overallProgress}%` }}
+          >
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+          {/* Scene markers */}
+          {safeScenes.map((s, idx) => {
+            if (idx === 0) return null
+            const markerTime = safeScenes.slice(0, idx).reduce((sum, sc) => sum + (sc?.duration_seconds ?? 0), 0)
+            const markerPct = totalDuration > 0 ? (markerTime / totalDuration) * 100 : 0
+            return (
+              <div
+                key={idx}
+                className="absolute top-0 w-0.5 h-full bg-white/20"
+                style={{ left: `${markerPct}%` }}
+              />
+            )
+          })}
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {/* Skip back */}
+            <button
+              onClick={skipPrev}
+              disabled={currentSceneIdx === 0}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[hsl(30,30%,95%)] hover:bg-[hsl(20,30%,15%)] disabled:opacity-30 transition-all"
+            >
+              <FiSkipBack className="w-4 h-4" />
+            </button>
+
+            {/* Play/pause */}
+            <button
+              onClick={togglePlay}
+              className="w-10 h-10 rounded-xl bg-[hsl(24,80%,45%)] flex items-center justify-center text-white hover:bg-[hsl(24,80%,50%)] shadow-lg shadow-[hsl(24,80%,45%)]/20 transition-all"
+            >
+              {isFinished ? (
+                <FiRefreshCw className="w-4 h-4" />
+              ) : isPlaying ? (
+                <FiPause className="w-4 h-4" />
+              ) : (
+                <FiPlay className="w-4 h-4 ml-0.5" />
+              )}
+            </button>
+
+            {/* Skip forward */}
+            <button
+              onClick={skipNext}
+              disabled={currentSceneIdx >= safeScenes.length - 1}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[hsl(30,30%,95%)] hover:bg-[hsl(20,30%,15%)] disabled:opacity-30 transition-all"
+            >
+              <FiSkipForward className="w-4 h-4" />
+            </button>
+
+            {/* Time display */}
+            <span className="text-xs text-[hsl(30,20%,60%)] font-mono ml-2">
+              {formatDuration(Math.floor(overallElapsed))} / {formatDuration(totalDuration)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Narration toggle */}
+            <button
+              onClick={() => setShowNarration((prev) => !prev)}
+              className={cn(
+                'h-7 px-2.5 rounded-lg text-[10px] font-medium flex items-center gap-1 transition-all',
+                showNarration
+                  ? 'bg-[hsl(24,80%,45%)]/20 text-[hsl(24,80%,45%)]'
+                  : 'text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)]'
+              )}
+            >
+              <HiOutlineDocumentText className="w-3 h-3" />
+              CC
+            </button>
+
+            {/* Mute toggle */}
+            <button
+              onClick={() => setIsMuted((prev) => !prev)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)] transition-all"
+            >
+              {isMuted ? <FiVolumeX className="w-4 h-4" /> : <FiVolume2 className="w-4 h-4" />}
+            </button>
+
+            {/* Expand */}
+            <button
+              onClick={() => setIsExpanded((prev) => !prev)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)] transition-all"
+            >
+              {isExpanded ? <FiMinimize2 className="w-4 h-4" /> : <FiMaximize2 className="w-4 h-4" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Scene thumbnails strip */}
+        {safeScenes.length > 1 && (
+          <div className="flex gap-1.5 mt-3 overflow-x-auto pb-1">
+            {safeScenes.map((s, idx) => (
+              <button
+                key={idx}
+                onClick={() => { setCurrentSceneIdx(idx); setSceneElapsed(0); setIsPlaying(false) }}
+                className={cn(
+                  'flex-shrink-0 rounded-lg overflow-hidden border-2 transition-all relative',
+                  idx === currentSceneIdx
+                    ? 'border-[hsl(24,80%,45%)] shadow-lg shadow-[hsl(24,80%,45%)]/20'
+                    : idx < currentSceneIdx
+                      ? 'border-[hsl(20,30%,15%)] opacity-70 hover:opacity-100'
+                      : 'border-[hsl(20,30%,15%)] opacity-50 hover:opacity-80'
+                )}
+                style={{ width: '72px', height: '44px' }}
+              >
+                {safeImages[idx]?.file_url ? (
+                  <img src={safeImages[idx].file_url} alt={`Scene ${idx + 1}`} className="w-full h-full object-cover" />
+                ) : safeVisuals[idx]?.color_palette ? (
+                  <div
+                    className="w-full h-full"
+                    style={{
+                      background: `linear-gradient(135deg, ${safeVisuals[idx].color_palette.primary ?? '#222'}, ${safeVisuals[idx].color_palette.accent ?? '#444'})`,
+                    }}
+                  />
+                ) : (
+                  <div className="w-full h-full bg-[hsl(20,30%,15%)] flex items-center justify-center">
+                    <span className="text-[9px] font-bold text-[hsl(30,20%,60%)]">{idx + 1}</span>
+                  </div>
+                )}
+                {/* Playing indicator */}
+                {idx === currentSceneIdx && isPlaying && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                    <div className="flex items-end gap-0.5 h-3">
+                      <div className="w-0.5 bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '60%', animationDelay: '0ms' }} />
+                      <div className="w-0.5 bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '100%', animationDelay: '150ms' }} />
+                      <div className="w-0.5 bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '40%', animationDelay: '300ms' }} />
+                    </div>
+                  </div>
+                )}
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/30">
+                  <div className="h-full bg-[hsl(24,80%,45%)]" style={{ width: idx === currentSceneIdx ? `${sceneProgress}%` : idx < currentSceneIdx ? '100%' : '0%' }} />
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 // ==================== RENDER PREVIEW SCREEN ====================
 function RenderPreviewScreen({
   scriptData,
@@ -1056,8 +1459,6 @@ function RenderPreviewScreen({
 }) {
   const sceneVisuals = Array.isArray(visualData?.scene_visuals) ? visualData.scene_visuals : []
   const images = Array.isArray(generatedImages) ? generatedImages : []
-  const [selectedVisual, setSelectedVisual] = useState(0)
-
   if (!visualData && !isGeneratingVisuals) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -1132,71 +1533,16 @@ function RenderPreviewScreen({
 
         {!isGeneratingVisuals && (
           <>
-            {images.length > 0 && (
-              <Card className="bg-[hsl(20,40%,6%)] border-2 border-[hsl(20,30%,15%)] rounded-2xl mb-6 shadow-xl overflow-hidden">
-                <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
-                  {images[selectedVisual]?.file_url ? (
-                    <img
-                      src={images[selectedVisual].file_url}
-                      alt={images[selectedVisual]?.name ?? `Scene ${selectedVisual + 1}`}
-                      className="w-full h-full object-contain"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-3 text-[hsl(30,20%,60%)]">
-                      <FiMonitor className="w-16 h-16 opacity-30" />
-                      <p className="text-sm">No image available</p>
-                    </div>
-                  )}
-                  <div className="absolute top-4 left-4 flex items-center gap-2">
-                    <Badge className="bg-black/60 text-white border-0 backdrop-blur-sm rounded-lg px-2.5 py-1 text-xs">
-                      Scene {selectedVisual + 1} / {images.length}
-                    </Badge>
-                  </div>
-                  {images.length > 1 && (
-                    <>
-                      <button
-                        onClick={() => setSelectedVisual((prev) => Math.max(0, prev - 1))}
-                        disabled={selectedVisual === 0}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center text-white hover:bg-black/70 disabled:opacity-30 transition-all"
-                      >
-                        <FiChevronLeft className="w-5 h-5" />
-                      </button>
-                      <button
-                        onClick={() => setSelectedVisual((prev) => Math.min(images.length - 1, prev + 1))}
-                        disabled={selectedVisual === images.length - 1}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center text-white hover:bg-black/70 disabled:opacity-30 transition-all"
-                      >
-                        <FiChevronRight className="w-5 h-5" />
-                      </button>
-                    </>
-                  )}
-                </div>
-                {images.length > 1 && (
-                  <div className="p-3 flex gap-2 overflow-x-auto">
-                    {images.map((img, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => setSelectedVisual(idx)}
-                        className={cn(
-                          'flex-shrink-0 w-20 h-12 rounded-lg overflow-hidden border-2 transition-all',
-                          idx === selectedVisual ? 'border-[hsl(24,80%,45%)] shadow-lg shadow-[hsl(24,80%,45%)]/20' : 'border-[hsl(20,30%,15%)] opacity-60 hover:opacity-100'
-                        )}
-                      >
-                        {img?.file_url ? (
-                          <img src={img.file_url} alt={img?.name ?? `Scene ${idx + 1}`} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full bg-[hsl(20,30%,15%)] flex items-center justify-center">
-                            <FiImage className="w-3 h-3 text-[hsl(30,20%,60%)]" />
-                          </div>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </Card>
+            {(Array.isArray(scriptData?.scenes) && scriptData!.scenes.length > 0) && (
+              <VideoPreviewPlayer
+                scenes={Array.isArray(scriptData?.scenes) ? scriptData!.scenes : []}
+                sceneVisuals={sceneVisuals}
+                images={images}
+                title={visualData?.video_title ?? scriptData?.title ?? 'Untitled'}
+              />
             )}
 
-            {images.length === 0 && sceneVisuals.length > 0 && (
+            {(!scriptData?.scenes || scriptData.scenes.length === 0) && images.length === 0 && sceneVisuals.length > 0 && (
               <Card className="bg-[hsl(20,40%,6%)] border-2 border-[hsl(20,30%,15%)] rounded-2xl mb-6 shadow-xl">
                 <CardContent className="p-8 text-center">
                   <FiImage className="w-12 h-12 text-[hsl(30,20%,60%)]/40 mx-auto mb-3" />
