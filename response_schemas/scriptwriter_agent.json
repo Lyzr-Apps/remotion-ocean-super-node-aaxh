@@ -1,0 +1,22 @@
+{
+  "agent_name": "Scriptwriter Agent",
+  "agent_id": "69a108a17e53a1840a00a30a",
+  "agent_type": "json",
+  "accessor": "json",
+  "has_module_outputs": false,
+  "response_schema": {
+    "title": "string",
+    "total_duration_seconds": "number",
+    "style": "string",
+    "scenes": [
+      {
+        "scene_number": "number",
+        "scene_title": "string",
+        "narration_text": "string",
+        "scene_description": "string",
+        "duration_seconds": "number",
+        "transition": "string"
+      }
+    ]
+  }
+}

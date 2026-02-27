@@ -1,0 +1,29 @@
+{
+  "agent_name": "Scene Director Agent",
+  "agent_id": "69a108c199b862436211044d",
+  "agent_type": "json",
+  "accessor": "json",
+  "has_module_outputs": true,
+  "response_schema": {
+    "video_title": "string",
+    "visual_style": "string",
+    "scene_visuals": [
+      {
+        "scene_number": "number",
+        "image_prompt": "string",
+        "layout_description": "string",
+        "color_palette": {
+          "primary": "string",
+          "secondary": "string",
+          "accent": "string"
+        },
+        "motion_notes": "string",
+        "text_overlay": {
+          "text": "string",
+          "position": "string",
+          "animation": "string"
+        }
+      }
+    ]
+  }
+}

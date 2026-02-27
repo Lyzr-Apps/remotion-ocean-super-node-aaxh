@@ -1,0 +1,24 @@
+{
+  "agent_name": "Video Script Coordinator",
+  "agent_id": "69a108c100c1fa2770ac9d59",
+  "agent_type": "json",
+  "accessor": "json",
+  "has_module_outputs": false,
+  "response_schema": {
+    "title": "string",
+    "topic": "string",
+    "total_duration_seconds": "number",
+    "style": "string",
+    "research_summary": "string",
+    "scenes": [
+      {
+        "scene_number": "number",
+        "scene_title": "string",
+        "narration_text": "string",
+        "scene_description": "string",
+        "duration_seconds": "number",
+        "transition": "string"
+      }
+    ]
+  }
+}

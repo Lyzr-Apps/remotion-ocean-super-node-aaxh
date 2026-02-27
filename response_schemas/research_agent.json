@@ -1,0 +1,16 @@
+{
+  "agent_name": "Topic Research Agent",
+  "agent_id": "69a108a0d8049284e8798d9e",
+  "agent_type": "json",
+  "accessor": "json",
+  "has_module_outputs": false,
+  "response_schema": {
+    "topic_summary": "string",
+    "key_facts": ["string"],
+    "statistics": ["string"],
+    "examples": ["string"],
+    "narrative_angles": ["string"],
+    "misconceptions": ["string"],
+    "sources": ["string"]
+  }
+}
