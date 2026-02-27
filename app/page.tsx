@@ -216,6 +216,145 @@ class PageErrorBoundary extends React.Component<
   }
 }
 
+// ==================== RESPONSE EXTRACTION ====================
+/**
+ * Deep-extract structured data from agent responses.
+ * Manager agents often return nested/wrapped responses that need unwrapping.
+ * Tries multiple extraction strategies in order of likelihood.
+ */
+function extractAgentData(result: any): any {
+  if (!result) return null
+
+  // Strategy 1: Direct access — result.response.result is already structured JSON object
+  const directResult = result?.response?.result
+  if (directResult && typeof directResult === 'object' && !Array.isArray(directResult)) {
+    // Check if it has expected fields directly (title, scenes, video_title, scene_visuals, etc.)
+    if (directResult.title || directResult.scenes || directResult.video_title || directResult.scene_visuals || directResult.topic_summary) {
+      return directResult
+    }
+    // It might have a text field containing JSON
+    if (typeof directResult.text === 'string') {
+      const fromText = tryParseJsonFromText(directResult.text)
+      if (fromText) return fromText
+    }
+    // It might have a message field containing JSON
+    if (typeof directResult.message === 'string') {
+      const fromMsg = tryParseJsonFromText(directResult.message)
+      if (fromMsg) return fromMsg
+    }
+    // It might have a response field containing JSON
+    if (typeof directResult.response === 'string') {
+      const fromResp = tryParseJsonFromText(directResult.response)
+      if (fromResp) return fromResp
+    }
+    // Check nested result within result
+    if (directResult.result && typeof directResult.result === 'object') {
+      if (directResult.result.title || directResult.result.scenes || directResult.result.video_title) {
+        return directResult.result
+      }
+    }
+    // If directResult has more than 2 keys (not just status+message), it might be the data itself
+    const keys = Object.keys(directResult)
+    if (keys.length > 2 && !keys.every(k => ['status', 'message', 'text', 'error'].includes(k))) {
+      return directResult
+    }
+  }
+
+  // Strategy 2: result.response itself might be the data (for some agent patterns)
+  const resp = result?.response
+  if (resp && typeof resp === 'object') {
+    if (resp.title || resp.scenes || resp.video_title || resp.scene_visuals) {
+      return resp
+    }
+    // Check result.response.message as JSON string
+    if (typeof resp.message === 'string') {
+      const fromRespMsg = tryParseJsonFromText(resp.message)
+      if (fromRespMsg) return fromRespMsg
+    }
+  }
+
+  // Strategy 3: raw_response contains the actual JSON
+  if (typeof result?.raw_response === 'string') {
+    const fromRaw = tryParseJsonFromText(result.raw_response)
+    if (fromRaw) return fromRaw
+  }
+
+  // Strategy 4: parseLLMJson on the direct result (handles LLM text wrapping)
+  if (directResult) {
+    const llmParsed = parseLLMJson(directResult)
+    if (llmParsed && typeof llmParsed === 'object' && !llmParsed.error && llmParsed.success !== false) {
+      if (llmParsed.title || llmParsed.scenes || llmParsed.video_title || llmParsed.scene_visuals) {
+        return llmParsed
+      }
+      // Check if parseLLMJson unwrapped to a wrapper that has the data inside
+      if (llmParsed.result && typeof llmParsed.result === 'object') {
+        return llmParsed.result
+      }
+    }
+  }
+
+  // Strategy 5: parseLLMJson on the whole response object
+  if (resp) {
+    const llmParsed2 = parseLLMJson(resp)
+    if (llmParsed2 && typeof llmParsed2 === 'object' && !llmParsed2.error && llmParsed2.success !== false) {
+      if (llmParsed2.title || llmParsed2.scenes || llmParsed2.video_title || llmParsed2.scene_visuals) {
+        return llmParsed2
+      }
+    }
+  }
+
+  // Strategy 6: If directResult is a string itself, try parsing it
+  if (typeof directResult === 'string') {
+    const fromStr = tryParseJsonFromText(directResult)
+    if (fromStr) return fromStr
+  }
+
+  // Fallback: return directResult even if we are unsure
+  return directResult ?? null
+}
+
+/**
+ * Try to parse a JSON object from a text string.
+ * Handles cases where JSON is embedded in markdown code blocks or plain text.
+ */
+function tryParseJsonFromText(text: string): any {
+  if (!text || typeof text !== 'string') return null
+  const trimmed = text.trim()
+
+  // Direct JSON parse
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch {}
+
+  // Extract from markdown code block
+  const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+  if (codeBlockMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(codeBlockMatch[1].trim())
+      if (parsed && typeof parsed === 'object') return parsed
+    } catch {}
+  }
+
+  // Find first { and last } for embedded JSON
+  const firstBrace = trimmed.indexOf('{')
+  const lastBrace = trimmed.lastIndexOf('}')
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      const parsed = JSON.parse(trimmed.substring(firstBrace, lastBrace + 1))
+      if (parsed && typeof parsed === 'object') return parsed
+    } catch {}
+  }
+
+  // Use parseLLMJson as final fallback
+  const llmResult = parseLLMJson(text)
+  if (llmResult && typeof llmResult === 'object' && !llmResult.error && llmResult.success !== false) {
+    return llmResult
+  }
+
+  return null
+}
+
 // ==================== HELPERS ====================
 function renderMarkdown(text: string) {
   if (!text) return null
@@ -1297,45 +1436,84 @@ export default function Page() {
       clearTimeout(researchTimer)
 
       if (result.success) {
-        const parsed = parseLLMJson(result?.response?.result)
-        if (parsed && typeof parsed === 'object' && !parsed.error) {
+        const parsed = extractAgentData(result)
+
+        if (parsed && typeof parsed === 'object') {
+          // Try to find scenes array from various possible locations
+          let scenesArr = parsed.scenes
+          if (!Array.isArray(scenesArr) && parsed.result?.scenes) {
+            scenesArr = parsed.result.scenes
+          }
+
           const data: ScriptData = {
-            title: parsed?.title ?? 'Untitled Video',
-            topic: parsed?.topic ?? currentTopic,
-            total_duration_seconds: parsed?.total_duration_seconds ?? 0,
-            style: parsed?.style ?? videoStyle,
-            research_summary: parsed?.research_summary ?? '',
-            scenes: Array.isArray(parsed?.scenes) ? parsed.scenes.map((s: any, idx: number) => ({
+            title: parsed?.title ?? parsed?.result?.title ?? 'Untitled Video',
+            topic: parsed?.topic ?? parsed?.result?.topic ?? currentTopic,
+            total_duration_seconds: parsed?.total_duration_seconds ?? parsed?.result?.total_duration_seconds ?? 0,
+            style: parsed?.style ?? parsed?.result?.style ?? videoStyle,
+            research_summary: parsed?.research_summary ?? parsed?.result?.research_summary ?? '',
+            scenes: Array.isArray(scenesArr) ? scenesArr.map((s: any, idx: number) => ({
               scene_number: s?.scene_number ?? idx + 1,
               scene_title: s?.scene_title ?? `Scene ${idx + 1}`,
               narration_text: s?.narration_text ?? '',
               scene_description: s?.scene_description ?? '',
-              duration_seconds: s?.duration_seconds ?? 30,
+              duration_seconds: typeof s?.duration_seconds === 'number' ? s.duration_seconds : 30,
               transition: s?.transition ?? 'cut',
             })) : [],
           }
+
+          if (data.scenes.length === 0) {
+            // Last resort: try parsing raw_response for scenes
+            if (typeof result?.raw_response === 'string') {
+              const rawParsed = tryParseJsonFromText(result.raw_response)
+              if (rawParsed?.scenes && Array.isArray(rawParsed.scenes)) {
+                data.scenes = rawParsed.scenes.map((s: any, idx: number) => ({
+                  scene_number: s?.scene_number ?? idx + 1,
+                  scene_title: s?.scene_title ?? `Scene ${idx + 1}`,
+                  narration_text: s?.narration_text ?? '',
+                  scene_description: s?.scene_description ?? '',
+                  duration_seconds: typeof s?.duration_seconds === 'number' ? s.duration_seconds : 30,
+                  transition: s?.transition ?? 'cut',
+                }))
+                data.title = rawParsed.title ?? data.title
+                data.topic = rawParsed.topic ?? data.topic
+                data.research_summary = rawParsed.research_summary ?? data.research_summary
+                data.total_duration_seconds = rawParsed.total_duration_seconds ?? data.total_duration_seconds
+                data.style = rawParsed.style ?? data.style
+              }
+            }
+          }
+
           if (!data.total_duration_seconds && data.scenes.length > 0) {
             data.total_duration_seconds = data.scenes.reduce((sum, s) => sum + s.duration_seconds, 0)
           }
-          setScriptData(data)
 
-          const newProject: ProjectRecord = {
-            id: generateId(),
-            title: data.title,
-            topic: data.topic,
-            style: data.style,
-            duration: data.total_duration_seconds,
-            createdAt: new Date().toISOString().split('T')[0],
-            status: 'scripted',
-            scriptData: data,
+          if (data.scenes.length > 0) {
+            setScriptData(data)
+
+            const newProject: ProjectRecord = {
+              id: generateId(),
+              title: data.title,
+              topic: data.topic,
+              style: data.style,
+              duration: data.total_duration_seconds,
+              createdAt: new Date().toISOString().split('T')[0],
+              status: 'scripted',
+              scriptData: data,
+            }
+            saveProjects([newProject, ...projects])
+            setCurrentScreen('script-preview')
+          } else {
+            console.error('[VideoForge] Parsed response has no scenes:', JSON.stringify(parsed).substring(0, 500))
+            setError('The AI generated a response but no scenes were found. Please try again with a more specific topic.')
           }
-          saveProjects([newProject, ...projects])
-          setCurrentScreen('script-preview')
         } else {
+          console.error('[VideoForge] Could not parse agent response:', JSON.stringify(result?.response).substring(0, 500))
           setError('Could not parse the script response. Please try again.')
         }
       } else {
-        setError(result?.error ?? 'Failed to generate script. Please try again.')
+        const errMsg = result?.error ?? result?.response?.message ?? 'Failed to generate script.'
+        console.error('[VideoForge] Agent call failed:', errMsg)
+        setError(errMsg)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred.')
@@ -1377,12 +1555,19 @@ export default function Page() {
       const result = await callAIAgent(message, SCENE_DIRECTOR_AGENT_ID)
 
       if (result.success) {
-        const parsed = parseLLMJson(result?.response?.result)
-        if (parsed && typeof parsed === 'object' && !parsed.error) {
+        const parsed = extractAgentData(result)
+
+        if (parsed && typeof parsed === 'object') {
+          // Try to find scene_visuals array from various possible locations
+          let visualsArr = parsed.scene_visuals
+          if (!Array.isArray(visualsArr) && parsed.result?.scene_visuals) {
+            visualsArr = parsed.result.scene_visuals
+          }
+
           const vData: VisualData = {
-            video_title: parsed?.video_title ?? scriptData?.title ?? 'Untitled',
-            visual_style: parsed?.visual_style ?? 'Default',
-            scene_visuals: Array.isArray(parsed?.scene_visuals) ? parsed.scene_visuals.map((sv: any, idx: number) => ({
+            video_title: parsed?.video_title ?? parsed?.result?.video_title ?? scriptData?.title ?? 'Untitled',
+            visual_style: parsed?.visual_style ?? parsed?.result?.visual_style ?? 'Default',
+            scene_visuals: Array.isArray(visualsArr) ? visualsArr.map((sv: any, idx: number) => ({
               scene_number: sv?.scene_number ?? idx + 1,
               image_prompt: sv?.image_prompt ?? '',
               layout_description: sv?.layout_description ?? '',
@@ -1399,8 +1584,34 @@ export default function Page() {
               },
             })) : [],
           }
+
+          if (vData.scene_visuals.length === 0 && typeof result?.raw_response === 'string') {
+            const rawParsed = tryParseJsonFromText(result.raw_response)
+            if (rawParsed?.scene_visuals && Array.isArray(rawParsed.scene_visuals)) {
+              vData.scene_visuals = rawParsed.scene_visuals.map((sv: any, idx: number) => ({
+                scene_number: sv?.scene_number ?? idx + 1,
+                image_prompt: sv?.image_prompt ?? '',
+                layout_description: sv?.layout_description ?? '',
+                color_palette: {
+                  primary: sv?.color_palette?.primary ?? '#333333',
+                  secondary: sv?.color_palette?.secondary ?? '#666666',
+                  accent: sv?.color_palette?.accent ?? '#999999',
+                },
+                motion_notes: sv?.motion_notes ?? '',
+                text_overlay: {
+                  text: sv?.text_overlay?.text ?? '',
+                  position: sv?.text_overlay?.position ?? 'center',
+                  animation: sv?.text_overlay?.animation ?? 'fade-in',
+                },
+              }))
+              vData.video_title = rawParsed.video_title ?? vData.video_title
+              vData.visual_style = rawParsed.visual_style ?? vData.visual_style
+            }
+          }
+
           setVisualData(vData)
 
+          // Extract images from module_outputs at top level
           const artifactFiles = Array.isArray(result?.module_outputs?.artifact_files)
             ? result.module_outputs!.artifact_files
             : []
@@ -1414,10 +1625,13 @@ export default function Page() {
           })
           saveProjects(updatedProjects)
         } else {
+          console.error('[VideoForge] Could not parse visual response:', JSON.stringify(result?.response).substring(0, 500))
           setError('Could not parse visual direction response. Please try again.')
         }
       } else {
-        setError(result?.error ?? 'Failed to generate visuals. Please try again.')
+        const errMsg = result?.error ?? result?.response?.message ?? 'Failed to generate visuals.'
+        console.error('[VideoForge] Scene Director call failed:', errMsg)
+        setError(errMsg)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred.')
