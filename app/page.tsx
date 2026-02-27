@@ -43,9 +43,12 @@ import {
   FiSkipBack,
   FiSkipForward,
   FiVolume2,
+  FiVolume1,
   FiVolumeX,
   FiMaximize2,
   FiMinimize2,
+  FiSettings,
+  FiMic,
 } from 'react-icons/fi'
 import {
   HiOutlineSparkles,
@@ -1057,7 +1060,15 @@ function VideoPreviewPlayer({
   const [isMuted, setIsMuted] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [showNarration, setShowNarration] = useState(true)
+  const [volume, setVolume] = useState(0.8)
+  const [speechRate, setSpeechRate] = useState(1.0)
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [selectedVoiceIdx, setSelectedVoiceIdx] = useState(0)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const spokenSceneRef = useRef<number>(-1)
   const TICK_MS = 100
 
   const safeScenes = Array.isArray(scenes) ? scenes : []
@@ -1077,6 +1088,114 @@ function VideoPreviewPlayer({
   const overallProgress = totalDuration > 0 ? (overallElapsed / totalDuration) * 100 : 0
   const sceneProgress = sceneDuration > 0 ? (sceneElapsed / sceneDuration) * 100 : 0
 
+  // Load available voices
+  useEffect(() => {
+    const loadVoices = () => {
+      if (typeof window === 'undefined' || !window.speechSynthesis) return
+      const voices = window.speechSynthesis.getVoices()
+      if (voices.length > 0) {
+        // Prefer English voices, prioritize natural/enhanced voices
+        const englishVoices = voices.filter(v => v.lang.startsWith('en'))
+        const sortedVoices = englishVoices.length > 0 ? englishVoices : voices
+        sortedVoices.sort((a, b) => {
+          // Prefer voices with "Natural", "Enhanced", "Premium" in name
+          const aScore = /natural|enhanced|premium|neural/i.test(a.name) ? 1 : 0
+          const bScore = /natural|enhanced|premium|neural/i.test(b.name) ? 1 : 0
+          return bScore - aScore
+        })
+        setAvailableVoices(sortedVoices)
+      }
+    }
+    loadVoices()
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoices
+    }
+    return () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = null
+      }
+    }
+  }, [])
+
+  // Stop speech helper
+  const stopSpeech = useCallback(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    utteranceRef.current = null
+    setIsSpeaking(false)
+  }, [])
+
+  // Speak narration for current scene
+  const speakNarration = useCallback((text: string, sceneIdx: number) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+    if (!text || isMuted) return
+
+    // Cancel any existing speech
+    window.speechSynthesis.cancel()
+
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.volume = volume
+    utterance.rate = speechRate
+    utterance.pitch = 1.0
+
+    if (availableVoices.length > 0 && selectedVoiceIdx < availableVoices.length) {
+      utterance.voice = availableVoices[selectedVoiceIdx]
+    }
+
+    utterance.onstart = () => setIsSpeaking(true)
+    utterance.onend = () => {
+      setIsSpeaking(false)
+      utteranceRef.current = null
+    }
+    utterance.onerror = () => {
+      setIsSpeaking(false)
+      utteranceRef.current = null
+    }
+
+    utteranceRef.current = utterance
+    spokenSceneRef.current = sceneIdx
+    window.speechSynthesis.speak(utterance)
+  }, [isMuted, volume, speechRate, availableVoices, selectedVoiceIdx])
+
+  // Trigger narration when scene changes during playback
+  useEffect(() => {
+    if (isPlaying && !isMuted && currentScene?.narration_text && spokenSceneRef.current !== currentSceneIdx) {
+      speakNarration(currentScene.narration_text, currentSceneIdx)
+    }
+  }, [currentSceneIdx, isPlaying, isMuted, currentScene?.narration_text, speakNarration])
+
+  // Handle mute/unmute
+  useEffect(() => {
+    if (isMuted) {
+      stopSpeech()
+    } else if (isPlaying && currentScene?.narration_text && spokenSceneRef.current !== currentSceneIdx) {
+      speakNarration(currentScene.narration_text, currentSceneIdx)
+    }
+  }, [isMuted, stopSpeech, isPlaying, currentScene?.narration_text, currentSceneIdx, speakNarration])
+
+  // Handle play/pause speech sync
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+    if (!isPlaying) {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.pause()
+      }
+    } else {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume()
+      }
+    }
+  }, [isPlaying])
+
+  // Clean up speech on unmount
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel()
+      }
+    }
+  }, [])
+
   // Playback tick
   useEffect(() => {
     if (isPlaying) {
@@ -1089,6 +1208,7 @@ function VideoPreviewPlayer({
               if (prevIdx >= safeScenes.length - 1) {
                 // End of video
                 setIsPlaying(false)
+                stopSpeech()
                 return prevIdx
               }
               return prevIdx + 1
@@ -1105,7 +1225,7 @@ function VideoPreviewPlayer({
         intervalRef.current = null
       }
     }
-  }, [isPlaying, sceneDuration, safeScenes.length])
+  }, [isPlaying, sceneDuration, safeScenes.length, stopSpeech])
 
   // Reset elapsed when scene changes externally
   useEffect(() => {
@@ -1117,6 +1237,8 @@ function VideoPreviewPlayer({
       // Restart from beginning
       setCurrentSceneIdx(0)
       setSceneElapsed(0)
+      spokenSceneRef.current = -1
+      stopSpeech()
     }
     setIsPlaying((prev) => !prev)
   }
@@ -1124,12 +1246,16 @@ function VideoPreviewPlayer({
   const skipPrev = () => {
     setIsPlaying(false)
     setSceneElapsed(0)
+    stopSpeech()
+    spokenSceneRef.current = -1
     setCurrentSceneIdx((prev) => Math.max(0, prev - 1))
   }
 
   const skipNext = () => {
     setIsPlaying(false)
     setSceneElapsed(0)
+    stopSpeech()
+    spokenSceneRef.current = -1
     setCurrentSceneIdx((prev) => Math.min(safeScenes.length - 1, prev + 1))
   }
 
@@ -1137,6 +1263,9 @@ function VideoPreviewPlayer({
     const rect = e.currentTarget.getBoundingClientRect()
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     const targetTime = pct * totalDuration
+
+    stopSpeech()
+    spokenSceneRef.current = -1
 
     let accumulated = 0
     for (let i = 0; i < safeScenes.length; i++) {
@@ -1151,6 +1280,14 @@ function VideoPreviewPlayer({
     // Past end
     setCurrentSceneIdx(safeScenes.length - 1)
     setSceneElapsed(safeScenes[safeScenes.length - 1]?.duration_seconds ?? 0)
+  }
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value)
+    setVolume(v)
+    if (utteranceRef.current) {
+      // Volume change takes effect on next utterance
+    }
   }
 
   const isFinished = currentSceneIdx >= safeScenes.length - 1 && sceneElapsed >= sceneDuration
@@ -1349,8 +1486,21 @@ function VideoPreviewPlayer({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Narration toggle */}
+          <div className="flex items-center gap-1.5">
+            {/* Speaking indicator */}
+            {isSpeaking && !isMuted && (
+              <div className="flex items-center gap-1 h-7 px-2 rounded-lg bg-[hsl(24,80%,45%)]/15">
+                <FiMic className="w-3 h-3 text-[hsl(24,80%,45%)] animate-pulse" />
+                <div className="flex items-end gap-[2px] h-3">
+                  <div className="w-[2px] bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '50%', animationDelay: '0ms' }} />
+                  <div className="w-[2px] bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '100%', animationDelay: '100ms' }} />
+                  <div className="w-[2px] bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '70%', animationDelay: '200ms' }} />
+                  <div className="w-[2px] bg-[hsl(24,80%,45%)] rounded-full animate-pulse" style={{ height: '40%', animationDelay: '300ms' }} />
+                </div>
+              </div>
+            )}
+
+            {/* Narration text toggle (CC) */}
             <button
               onClick={() => setShowNarration((prev) => !prev)}
               className={cn(
@@ -1364,12 +1514,43 @@ function VideoPreviewPlayer({
               CC
             </button>
 
-            {/* Mute toggle */}
+            {/* Volume control group */}
+            <div className="flex items-center gap-1 group/vol">
+              <button
+                onClick={() => setIsMuted((prev) => !prev)}
+                className={cn(
+                  'w-8 h-8 rounded-lg flex items-center justify-center transition-all',
+                  isMuted ? 'text-[hsl(0,63%,50%)] hover:bg-[hsl(0,63%,31%)]/15' : 'text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)]'
+                )}
+              >
+                {isMuted ? <FiVolumeX className="w-4 h-4" /> : volume > 0.5 ? <FiVolume2 className="w-4 h-4" /> : <FiVolume1 className="w-4 h-4" />}
+              </button>
+              {/* Volume slider — appears on hover */}
+              <div className="w-0 overflow-hidden group-hover/vol:w-20 transition-all duration-300">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  className="w-full h-1 bg-[hsl(20,30%,15%)] rounded-full appearance-none cursor-pointer accent-[hsl(24,80%,45%)]"
+                  style={{
+                    background: `linear-gradient(to right, hsl(24,80%,45%) ${(isMuted ? 0 : volume) * 100}%, hsl(20,30%,15%) ${(isMuted ? 0 : volume) * 100}%)`,
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Audio settings */}
             <button
-              onClick={() => setIsMuted((prev) => !prev)}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)] transition-all"
+              onClick={() => setShowSettings((prev) => !prev)}
+              className={cn(
+                'w-8 h-8 rounded-lg flex items-center justify-center transition-all',
+                showSettings ? 'text-[hsl(24,80%,45%)] bg-[hsl(24,80%,45%)]/15' : 'text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)]'
+              )}
             >
-              {isMuted ? <FiVolumeX className="w-4 h-4" /> : <FiVolume2 className="w-4 h-4" />}
+              <FiSettings className="w-4 h-4" />
             </button>
 
             {/* Expand */}
@@ -1388,7 +1569,7 @@ function VideoPreviewPlayer({
             {safeScenes.map((s, idx) => (
               <button
                 key={idx}
-                onClick={() => { setCurrentSceneIdx(idx); setSceneElapsed(0); setIsPlaying(false) }}
+                onClick={() => { setCurrentSceneIdx(idx); setSceneElapsed(0); setIsPlaying(false); stopSpeech(); spokenSceneRef.current = -1 }}
                 className={cn(
                   'flex-shrink-0 rounded-lg overflow-hidden border-2 transition-all relative',
                   idx === currentSceneIdx
@@ -1428,6 +1609,119 @@ function VideoPreviewPlayer({
                 </div>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Audio Settings Panel */}
+        {showSettings && (
+          <div className="mt-3 p-4 bg-[hsl(20,30%,8%)] rounded-xl border border-[hsl(20,30%,15%)] space-y-4">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-[hsl(30,20%,60%)] flex items-center gap-2">
+                <FiMic className="w-3.5 h-3.5 text-[hsl(24,80%,45%)]" />
+                Narration Audio Settings
+              </h4>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="w-6 h-6 rounded-md flex items-center justify-center text-[hsl(30,20%,60%)] hover:bg-[hsl(20,30%,15%)] transition-colors"
+              >
+                <FiX className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Voice Selection */}
+            {availableVoices.length > 0 && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(30,20%,60%)]">
+                  Voice ({availableVoices.length} available)
+                </label>
+                <select
+                  value={selectedVoiceIdx}
+                  onChange={(e) => setSelectedVoiceIdx(parseInt(e.target.value))}
+                  className="w-full h-8 bg-[hsl(20,30%,15%)] border border-[hsl(20,30%,20%)] rounded-lg text-xs text-[hsl(30,30%,95%)] px-2 focus:outline-none focus:border-[hsl(24,80%,45%)]"
+                >
+                  {availableVoices.map((voice, idx) => (
+                    <option key={idx} value={idx}>
+                      {voice.name} {voice.lang ? `(${voice.lang})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {availableVoices.length === 0 && (
+              <div className="flex items-center gap-2 p-2.5 bg-[hsl(24,80%,45%)]/10 rounded-lg border border-[hsl(24,80%,45%)]/20">
+                <FiAlertCircle className="w-3.5 h-3.5 text-[hsl(24,80%,45%)] flex-shrink-0" />
+                <p className="text-[10px] text-[hsl(30,20%,60%)]">
+                  No speech voices available. Your browser may not support Web Speech API.
+                </p>
+              </div>
+            )}
+
+            {/* Speech Rate */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(30,20%,60%)]">
+                  Speech Rate
+                </label>
+                <span className="text-[10px] text-[hsl(24,80%,45%)] font-mono">{speechRate.toFixed(1)}x</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] text-[hsl(30,20%,60%)]">0.5x</span>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="2.0"
+                  step="0.1"
+                  value={speechRate}
+                  onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
+                  className="flex-1 h-1 bg-[hsl(20,30%,15%)] rounded-full appearance-none cursor-pointer accent-[hsl(24,80%,45%)]"
+                  style={{
+                    background: `linear-gradient(to right, hsl(24,80%,45%) ${((speechRate - 0.5) / 1.5) * 100}%, hsl(20,30%,15%) ${((speechRate - 0.5) / 1.5) * 100}%)`,
+                  }}
+                />
+                <span className="text-[9px] text-[hsl(30,20%,60%)]">2.0x</span>
+              </div>
+            </div>
+
+            {/* Volume */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(30,20%,60%)]">
+                  Volume
+                </label>
+                <span className="text-[10px] text-[hsl(24,80%,45%)] font-mono">{Math.round(volume * 100)}%</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <FiVolumeX className="w-3 h-3 text-[hsl(30,20%,60%)] flex-shrink-0" />
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={volume}
+                  onChange={handleVolumeChange}
+                  className="flex-1 h-1 bg-[hsl(20,30%,15%)] rounded-full appearance-none cursor-pointer accent-[hsl(24,80%,45%)]"
+                  style={{
+                    background: `linear-gradient(to right, hsl(24,80%,45%) ${volume * 100}%, hsl(20,30%,15%) ${volume * 100}%)`,
+                  }}
+                />
+                <FiVolume2 className="w-3 h-3 text-[hsl(30,20%,60%)] flex-shrink-0" />
+              </div>
+            </div>
+
+            {/* Test Voice Button */}
+            <button
+              onClick={() => {
+                const testText = currentScene?.narration_text || 'This is a test of the narration voice. Adjust settings as needed.'
+                stopSpeech()
+                spokenSceneRef.current = -1
+                speakNarration(testText, -2)
+              }}
+              className="w-full h-8 bg-[hsl(24,80%,45%)]/15 hover:bg-[hsl(24,80%,45%)]/25 text-[hsl(24,80%,45%)] rounded-lg text-xs font-medium flex items-center justify-center gap-2 transition-colors border border-[hsl(24,80%,45%)]/20"
+            >
+              <FiPlay className="w-3 h-3" />
+              {isSpeaking ? 'Speaking...' : 'Test Voice'}
+            </button>
           </div>
         )}
       </div>
